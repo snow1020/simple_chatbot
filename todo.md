@@ -1,12 +1,12 @@
 # AIチャットアプリ実装タスクリスト
 
 ## プロジェクト設定
-- [ ] プロジェクト全体のフォルダ構成を作成
-- [ ] Next.jsプロジェクトの初期化（フロントエンド）
-- [ ] FastAPIプロジェクトの初期化（バックエンド）
-- [ ] 必要な依存関係のインストール
-  - [ ] フロントエンド: Next.js, TypeScript, Tailwind CSS, Socket.IO-client
-  - [ ] バックエンド: FastAPI, WebSockets, python-socketio, uvicorn
+- [x] プロジェクト全体のフォルダ構成を作成
+- [x] Next.jsプロジェクトの初期化（フロントエンド）
+- [x] FastAPIプロジェクトの初期化（バックエンド）
+- [x] 必要な依存関係のインストール
+  - [x] フロントエンド: Next.js, TypeScript, Tailwind CSS, Socket.IO-client
+  - [x] バックエンド: FastAPI, WebSockets, python-socketio, uvicorn
 
 ## バックエンド開発 (FastAPI + Python)
 - [ ] FastAPIの基本設定とCORS設定
