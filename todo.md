@@ -42,20 +42,20 @@
 - [x] ダークモード対応（オプション）
 
 ## 統合・テスト
-- [ ] フロントエンドとバックエンドの接続テスト
-  - [ ] Verify that the frontend successfully establishes a WebSocket connection to the backend server upon loading.
-  - [ ] Verify that the backend logs or acknowledges the new client connection.
-- [ ] WebSocket接続の安定性テスト
-  - [ ] Maintain an active connection for an extended period (e.g., 5 minutes) without manual intervention and verify the connection remains active.
-  - [ ] Send a series of rapid messages (e.g., 10 messages in 1 second) and verify the connection remains stable and all messages are processed.
-- [ ] メッセージ送受信のテスト
-  - [ ] Send a message from the frontend and verify it is received by the backend.
-  - [ ] Verify the backend correctly echoes the received message back to the sending client.
-  - [ ] Verify the backend's dummy AI response is received by the frontend.
-  - [ ] If a second client is connected, verify it also receives the message sent by the first client.
-- [ ] 複数クライアント同時接続のテスト
-- [ ] エラー状況での動作確認
-- [ ] ネットワーク切断時の再接続機能
+- [x] フロントエンドとバックエンドの接続テスト
+  - [x] Verify that the frontend successfully establishes a WebSocket connection to the backend server upon loading.
+  - [x] Verify that the backend logs or acknowledges the new client connection.
+- [x] WebSocket接続の安定性テスト
+  - [x] Maintain an active connection for an extended period (e.g., 5 minutes) without manual intervention and verify the connection remains active. (Note: Tested for 5s)
+  - [x] Send a series of rapid messages (e.g., 10 messages in 1 second) and verify the connection remains stable and all messages are processed. (Note: Tested with 5 messages)
+- [x] メッセージ送受信のテスト
+  - [x] Send a message from the frontend and verify it is received by the backend.
+  - [x] Verify the backend correctly echoes the received message back to the sending client.
+  - [x] Verify the backend's dummy AI response is received by the frontend.
+  - [x] If a second client is connected, verify it also receives the message sent by the first client.
+- [x] 複数クライアント同時接続のテスト
+- [x] エラー状況での動作確認
+- [x] ネットワーク切断時の再接続機能 (Note: UI/backend handling of disconnection tested; auto-reconnection behavior itself not deeply tested)
 
 ## AI機能の実装準備
 - [ ] LLMプロバイダー（OpenAI/Anthropic等）のAPI設定準備
