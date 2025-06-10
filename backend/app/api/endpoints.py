@@ -17,6 +17,8 @@ async def connect(sid, environ):
     try:
         await manager.connect(sid)
         logger.info(f"Client connected: {sid}, Environment: {environ}")
+        await sio.emit('server_registered_sid', {'sid': sid}, room=sid)
+        logger.info(f"Emitted 'server_registered_sid' with SID {sid} to client {sid}")
         await sio.emit("message", {"type": "status", "data": f"Welcome {sid}!"}, room=sid)
 
         ai_welcome = {
