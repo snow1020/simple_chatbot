@@ -1,0 +1,25 @@
+# Node.js 18をベースイメージとして使用
+FROM node:18-alpine
+
+# 作業ディレクトリを設定
+WORKDIR /app
+
+# npmの設定を最適化（タイムアウト対策）
+RUN npm config set registry https://registry.npmjs.org/ && \
+    npm config set fetch-retries 5 && \
+    npm config set fetch-retry-factor 2 && \
+    npm config set fetch-retry-mintimeout 10000 && \
+    npm config set fetch-retry-maxtimeout 60000
+
+# package.jsonとpackage-lock.jsonをコピー
+COPY package*.json ./
+
+# 依存関係をインストール（開発依存関係も含む、エラー回復機能付き）
+RUN npm install --verbose || \
+    (npm cache clean --force && npm install --verbose)
+
+# ポート3000を公開
+EXPOSE 3000
+
+# 開発サーバーを起動
+CMD ["npm", "run", "dev"] 

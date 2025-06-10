@@ -14,7 +14,7 @@ export interface Message { // Add export
 }
 
 // Define the WebSocket server URL
-const WEBSOCKET_URL = process.env.NEXT_PUBLIC_WEBSOCKET_URL || 'ws://localhost:8000/ws/chat';
+const WEBSOCKET_URL = process.env.NEXT_PUBLIC_WEBSOCKET_URL || 'http://localhost:8000/ws';
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
