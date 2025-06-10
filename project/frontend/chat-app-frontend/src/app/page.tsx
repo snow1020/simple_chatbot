@@ -6,7 +6,7 @@ import MessageInput from '@/components/MessageInput';
 import useWebSocket from '@/hooks/useWebSocket'; // Import the hook
 
 // Define the message type
-interface Message {
+export interface Message { // Add export
   id: string;
   text: string;
   sender: 'user' | 'ai';

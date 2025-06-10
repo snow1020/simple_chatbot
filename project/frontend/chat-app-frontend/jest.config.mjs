@@ -23,6 +23,7 @@ const customJestConfig = {
     '^@/components/(.*)$': '<rootDir>/src/components/$1',
     '^@/app/(.*)$': '<rootDir>/src/app/$1', // If using app router
     '^@/lib/(.*)$': '<rootDir>/src/lib/$1',
+    '^@/hooks/(.*)$': '<rootDir>/src/hooks/$1', // Added for hooks alias
     // Add other aliases here if needed
   },
   // Add more setup options before each test is run

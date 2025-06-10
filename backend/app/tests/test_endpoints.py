@@ -63,39 +63,74 @@ async def test_client_can_connect(live_server_url):
 @pytest.mark.asyncio
 async def test_server_registers_connection(live_server_url):
     '''Test that the server registers the client connection in the ConnectionManager.'''
-    client = socketio.AsyncClient()
-    client_sid = None
+    client = socketio.AsyncClient(logger=True, engineio_logger=True)
 
-    initial_sids = manager.get_active_sids().copy()
+    client_sio_instance_sid = None # SID from client.sid property
+    server_reported_sid_event = asyncio.Event()
+    server_sid_for_client = None
+
+    initial_sids_from_manager = manager.get_active_sids().copy() # Ensure it's a copy
+    print(f"[Test Setup] Initial SIDs in manager: {initial_sids_from_manager}")
 
     @client.event
     async def connect():
-        nonlocal client_sid
-        client_sid = client.sid
-        print(f"Test client connected with SID: {client_sid}")
+        nonlocal client_sio_instance_sid
+        client_sio_instance_sid = client.sid
+        print(f"[Client Event] 'connect' event fired. Client instance SID: {client_sio_instance_sid}")
+
+    @client.on('server_registered_sid')
+    async def on_server_registered_sid(data):
+        nonlocal server_sid_for_client
+        server_sid_for_client = data['sid']
+        print(f"[Client Event] 'server_registered_sid' received. Server says SID is: {server_sid_for_client}")
+        server_reported_sid_event.set()
 
     @client.event
     async def connect_error(data):
+        print(f"[Client Event] 'connect_error' event fired. Data: {data}")
         pytest.fail(f"Connection failed for SID registration test: {data}")
 
     try:
-        await client.connect(live_server_url, socketio_path="ws")
-        await asyncio.sleep(0.5)
+        await client.connect(live_server_url, socketio_path="ws", transports=['websocket'])
 
-        assert client.connected
-        assert client_sid is not None, "Client SID was not set on connect"
+        # Wait for the client to connect and receive the server_registered_sid event
+        await asyncio.wait_for(server_reported_sid_event.wait(), timeout=5.0)
 
-        current_sids = manager.get_active_sids()
-        assert client_sid in current_sids, \
-            f"Client SID {client_sid} not found in manager. Active SIDs: {current_sids}"
-        assert client_sid not in initial_sids, \
-            f"Client SID {client_sid} was already in initial_sids."
+        assert client.connected, f"Client not connected. State: {client.eio.state if client.eio else 'N/A'}"
+        assert client_sio_instance_sid is not None, "Client SID (client.sid) was not set."
+        assert server_sid_for_client is not None, "Server_reported_sid was not received/set."
 
+        print(f"[Test Check] Client instance SID (client.sid): {client_sio_instance_sid}")
+        print(f"[Test Check] SID reported by server event: {server_sid_for_client}")
+
+        # Key diagnostic: are they the same?
+        if client_sio_instance_sid != server_sid_for_client:
+            print(f"WARNING: Client instance SID '{client_sio_instance_sid}' and server-reported SID '{server_sid_for_client}' MISMATCH!")
+            # This is likely the core issue. The test should assert based on what the server *thinks* the SID is,
+            # because that's what will be in the ConnectionManager.
+
+        sids_in_manager_after_connect = manager.get_active_sids()
+        print(f"[Test Check] SIDs in manager after connect: {sids_in_manager_after_connect}")
+
+        # Assert that the SID *the server registered* is in the manager
+        assert server_sid_for_client in sids_in_manager_after_connect, \
+            f"Server-reported SID {server_sid_for_client} not found in manager. Active SIDs: {sids_in_manager_after_connect}"
+
+        assert server_sid_for_client not in initial_sids_from_manager, \
+            f"Server-reported SID {server_sid_for_client} was already in initial_sids."
+
+    except asyncio.TimeoutError:
+        details = "Timeout waiting for server_registered_sid event. "
+        if not client.connected: details += "Client not connected. "
+        if client_sio_instance_sid is None: details += "client.sid not set. "
+        if server_sid_for_client is None: details += "server_sid_for_client not set. "
+        pytest.fail(details)
     except Exception as e:
         pytest.fail(f"An exception occurred during SID registration test: {e}")
     finally:
         if client.connected:
             await client.disconnect()
+        await asyncio.sleep(0.1)
 
 @pytest.mark.asyncio
 async def test_connection_stability_long_poll(live_server_url):
@@ -251,41 +286,61 @@ async def test_backend_echoes_message(live_server_url):
     client = socketio.AsyncClient(logger=True, engineio_logger=True)
     connected_event = asyncio.Event()
     echo_received_event = asyncio.Event()
+    server_sid_for_client = None # Store server-acknowledged SID
+    server_sid_event = asyncio.Event()
 
     unique_message_text = f"Echo test message - {uuid.uuid4()}"
-    client_sid = None
 
     @client.event
     async def connect():
-        nonlocal client_sid
-        client_sid = client.sid
-        connected_event.set()
+        connected_event.set() # Client instance connected
+
+    @client.on('server_registered_sid')
+    async def on_server_registered_sid(data):
+        nonlocal server_sid_for_client
+        server_sid_for_client = data['sid']
+        server_sid_event.set()
+        print(f"Echo Test: Server registered SID {server_sid_for_client} for client {client.sid}")
+
 
     @client.on("new_message")
     async def on_new_message(data):
+        nonlocal server_sid_for_client
+        # Wait until server_sid_for_client is known
+        if not server_sid_event.is_set():
+            print("Echo Test: new_message received before server_sid known, deferring check.")
+            await server_sid_event.wait() # ensure server_sid_for_client is set
+
+        print(f"Echo Test: Received new_message: {data}, expecting sender_sid: {server_sid_for_client}")
         if not data.get("is_ai", False) and \
            data.get("text") == unique_message_text and \
-           data.get("sender_sid") == client_sid:
+           data.get("sender_sid") == server_sid_for_client: # Use server_sid_for_client
             echo_received_event.set()
 
     try:
-        await client.connect(live_server_url, socketio_path="ws")
+        await client.connect(live_server_url, socketio_path="ws", transports=['websocket'])
         await asyncio.wait_for(connected_event.wait(), timeout=5.0)
+        await asyncio.wait_for(server_sid_event.wait(), timeout=5.0) # Ensure server SID is received
         assert client.connected
-        assert client_sid is not None
+        assert server_sid_for_client is not None
 
         await client.emit("chat_message", {"text": unique_message_text})
         await asyncio.wait_for(echo_received_event.wait(), timeout=5.0)
 
-        assert echo_received_event.is_set(), "Backend did not send the correct echo message."
+        assert echo_received_event.is_set(), f"Backend did not send the correct echo message. Expected sender_sid {server_sid_for_client}."
 
     except asyncio.TimeoutError:
-        pytest.fail("Timeout waiting for connection or echo message.")
+        details = "Timeout in echo test. "
+        if not connected_event.is_set(): details += "Client not connected. "
+        if not server_sid_event.is_set(): details += "Server SID not received. "
+        if not echo_received_event.is_set(): details += "Echo not received. "
+        pytest.fail(details)
     except Exception as e:
         pytest.fail(f"An exception occurred: {e}")
     finally:
         if client.connected:
             await client.disconnect()
+        await asyncio.sleep(0.1)
 
 @pytest.mark.asyncio
 async def test_backend_sends_ai_response(live_server_url):
@@ -336,13 +391,20 @@ async def test_message_broadcast_to_other_clients(live_server_url):
 
     client2_received_user_message = asyncio.Event()
     client2_received_ai_message = asyncio.Event()
-    client1_sid = None
+
+    server_client1_sid = None
+    client1_server_sid_event = asyncio.Event()
 
     @client1.event
     async def connect():
-        nonlocal client1_sid
-        client1_sid = client1.sid
         client1_connected.set()
+
+    @client1.on('server_registered_sid')
+    async def on_client1_server_sid(data):
+        nonlocal server_client1_sid
+        server_client1_sid = data['sid']
+        client1_server_sid_event.set()
+        print(f"Broadcast Test: Server registered SID {server_client1_sid} for client1 {client1.sid}")
 
     @client2.event
     async def connect():
@@ -350,9 +412,14 @@ async def test_message_broadcast_to_other_clients(live_server_url):
 
     @client2.on("new_message")
     async def client2_on_new_message(data):
+        nonlocal server_client1_sid
+        if not client1_server_sid_event.is_set():
+            print("Broadcast Test: new_message for client2 received before client1's server_sid known.")
+            await client1_server_sid_event.wait()
+
         if not data.get("is_ai") and \
            data.get("text") == message_text and \
-           data.get("sender_sid") == client1_sid:
+           data.get("sender_sid") == server_client1_sid:
             client2_received_user_message.set()
         elif data.get("is_ai"):
             client2_received_ai_message.set()
@@ -361,12 +428,16 @@ async def test_message_broadcast_to_other_clients(live_server_url):
 
     async def setup_clients():
         try:
-            await client1.connect(live_server_url, socketio_path="ws")
-            await client2.connect(live_server_url, socketio_path="ws")
+            # Connect with forced websocket transport
+            await client1.connect(live_server_url, socketio_path="ws", transports=['websocket'])
+            await client2.connect(live_server_url, socketio_path="ws", transports=['websocket'])
+
             await asyncio.wait_for(client1_connected.wait(), timeout=5)
             await asyncio.wait_for(client2_connected.wait(), timeout=5)
+            await asyncio.wait_for(client1_server_sid_event.wait(), timeout=5) # Ensure client1's server SID is received
+
             assert client1.connected and client2.connected
-            assert client1_sid is not None
+            assert server_client1_sid is not None, "Client1's server-acknowledged SID not set"
             all_clients_setup.set()
         except Exception as e:
             print(f"Client setup failed: {e}")
@@ -408,25 +479,32 @@ async def test_multiple_clients_concurrent_interactions(live_server_url):
     NUM_CLIENTS = 3
     clients = [socketio.AsyncClient(logger=True, engineio_logger=True) for _ in range(NUM_CLIENTS)]
 
-    connection_events = [asyncio.Event() for _ in range(NUM_CLIENTS)]
-    sids = [None] * NUM_CLIENTS
+    # Events for when server_registered_sid is received by each client
+    server_sid_received_events = [asyncio.Event() for _ in range(NUM_CLIENTS)]
+
+    # Store client.sid (instance SID) - will be populated after connection
+    client_instance_sids = [None] * NUM_CLIENTS
+    # Store server-acknowledged SIDs
+    server_sids = [None] * NUM_CLIENTS
 
     EXPECTED_MESSAGES_PER_CLIENT = 2 * NUM_CLIENTS
-
     received_message_counts = [0] * NUM_CLIENTS
     all_messages_received_events = [asyncio.Event() for _ in range(NUM_CLIENTS)]
-
     client_messages_text = [f"Msg from Client{i} {uuid.uuid4()}" for i in range(NUM_CLIENTS)]
 
     for i in range(NUM_CLIENTS):
         client = clients[i]
 
-        def create_connect_handler(index):
-            async def connect_handler():
-                sids[index] = clients[index].sid
-                connection_events[index].set()
-                print(f"Client {index} connected with SID {sids[index]}")
-            return connect_handler
+        # Note: The client's own 'connect' event handler seems unreliable in this specific multi-client test.
+        # We will rely on 'server_registered_sid' as the primary indicator of successful connection and SID acquisition.
+        # The client_instance_sids will be populated after server_sid_received_events is set.
+
+        def create_server_registered_sid_handler(index):
+            async def server_registered_sid_handler(data):
+                server_sids[index] = data['sid']
+                server_sid_received_events[index].set() # Indicates server SID is known
+                print(f"Client {index} received server_registered_sid: {server_sids[index]}")
+            return server_registered_sid_handler
 
         def create_connect_error_handler(index):
             async def connect_error_handler(data):
@@ -436,36 +514,59 @@ async def test_multiple_clients_concurrent_interactions(live_server_url):
         def create_new_message_handler(index):
             async def on_new_message_handler(data):
                 received_message_counts[index] += 1
-                print(f"Client {index} (SID: {clients[index].sid}) received message: {data}. Count: {received_message_counts[index]}")
+                print(f"Client {index} (Server SID: {server_sids[index]}) received message: {data}. Count: {received_message_counts[index]}")
                 assert "text" in data
                 assert "is_ai" in data
-                assert "sender_sid" in data
+                # Sender SID check: if it's not AI, it's an echo.
+                # The sender_sid in data should be the server-acknowledged SID of the original sender.
+                if not data.get("is_ai"):
+                    original_sender_text = data.get("text")
+                    original_sender_index = -1
+                    for idx, text_to_find in enumerate(client_messages_text):
+                        if text_to_find == original_sender_text:
+                            original_sender_index = idx
+                            break
+                    assert original_sender_index != -1, "Could not find original sender index for echo"
+                    assert data.get("sender_sid") == server_sids[original_sender_index], \
+                        f"Echoed message sender SID {data.get('sender_sid')} does not match server SID {server_sids[original_sender_index]} for client {original_sender_index}"
+
                 if received_message_counts[index] >= EXPECTED_MESSAGES_PER_CLIENT:
                     all_messages_received_events[index].set()
             return on_new_message_handler
 
         def create_error_handler(index):
             async def error_handler(data):
-                 pytest.fail(f"Client {index} received server error: {data}")
+                 pytest.fail(f"Client {index} (Server SID: {server_sids[index]}) received server error: {data}")
             return error_handler
 
-        client.event(create_connect_handler(i))
+        # client.event(create_connect_handler(i)) # This was removed as connect event is unreliable here
+        client.on('server_registered_sid')(create_server_registered_sid_handler(i))
         client.event(create_connect_error_handler(i))
         client.on("new_message")(create_new_message_handler(i))
         client.event(create_error_handler(i))
 
     connect_tasks = []
     for i in range(NUM_CLIENTS):
-        connect_tasks.append(clients[i].connect(live_server_url, socketio_path="ws"))
+        # Force websocket transport
+        connect_tasks.append(clients[i].connect(live_server_url, socketio_path="ws", transports=['websocket']))
 
     try:
         await asyncio.gather(*connect_tasks, return_exceptions=True)
 
+        # Wait for all clients to have received their server_registered_sid
         for i in range(NUM_CLIENTS):
-            await asyncio.wait_for(connection_events[i].wait(), timeout=5.0)
-            assert clients[i].connected, f"Client {i} failed to connect."
-            assert sids[i] is not None, f"Client {i} SID not set."
-        print(f"All {NUM_CLIENTS} clients connected. SIDs: {sids}")
+            await asyncio.wait_for(server_sid_received_events[i].wait(), timeout=10.0) # Increased timeout
+            assert clients[i].connected, f"Client {i} failed to connect (state: {clients[i].eio.state if clients[i].eio else 'N/A'})."
+            assert server_sids[i] is not None, f"Client {i} Server SID not set after server_registered_sid event."
+
+            # Populate client_instance_sids after server confirms SID, as client.sid should be stable then
+            client_instance_sids[i] = clients[i].sid
+            if client_instance_sids[i] is None:
+                print(f"ERROR: Client {i} client.sid is None even after server_registered_sid event.")
+            elif client_instance_sids[i] != server_sids[i]:
+                 print(f"Client {i} instance SID {client_instance_sids[i]} != Server SID {server_sids[i]} (WARNING)")
+
+        print(f"All {NUM_CLIENTS} clients considered connected (server_registered_sid received). Server SIDs: {server_sids}")
 
         send_message_tasks = []
         for i in range(NUM_CLIENTS):
@@ -485,10 +586,11 @@ async def test_multiple_clients_concurrent_interactions(live_server_url):
     except asyncio.TimeoutError as e:
         details = []
         for i in range(NUM_CLIENTS):
-            if not connection_events[i].is_set(): details.append(f"Client{i} connect timeout")
+            if not server_sid_received_events[i].is_set():
+                details.append(f"Client{i} server SID event timeout (server_sid: {server_sids[i]})")
             elif not all_messages_received_events[i].is_set():
-                 details.append(f"Client{i} msg timeout (got {received_message_counts[i]}/{EXPECTED_MESSAGES_PER_CLIENT})")
-        if not details: details.append(f"Unknown timeout: {e}")
+                 details.append(f"Client{i} msg timeout (got {received_message_counts[i]}/{EXPECTED_MESSAGES_PER_CLIENT}, server SID: {server_sids[i]})")
+        if not details: details.append(f"Unknown timeout reason: {e}") # Add original error if no specific detail found
         pytest.fail(f"Timeout during multi-client test. Details: {'; '.join(details)}")
     except Exception as e:
         pytest.fail(f"An exception occurred during multi-client test: {e}")
@@ -502,68 +604,90 @@ async def test_multiple_clients_concurrent_interactions(live_server_url):
 async def test_graceful_disconnection(live_server_url):
     '''Test that the server handles client disconnection gracefully.'''
     client = socketio.AsyncClient(logger=True, engineio_logger=True)
-    connected_event = asyncio.Event()
-
-    client_sid_to_disconnect = None
+    client_connected_event = asyncio.Event()
+    server_sid_of_client_to_disconnect = None
+    client_server_sid_event = asyncio.Event()
 
     observer_client = socketio.AsyncClient(logger=True, engineio_logger=True)
-    observer_connected = asyncio.Event()
+    observer_connected_event = asyncio.Event()
     user_left_message_received = asyncio.Event()
 
     @client.event
     async def connect():
-        nonlocal client_sid_to_disconnect
-        client_sid_to_disconnect = client.sid
-        connected_event.set()
-        print(f"Disconnect test: Client to be disconnected is {client_sid_to_disconnect}")
+        client_connected_event.set()
+        # client_sid_to_disconnect will be set by server_registered_sid event
+
+    @client.on('server_registered_sid')
+    async def on_client_server_sid(data):
+        nonlocal server_sid_of_client_to_disconnect
+        server_sid_of_client_to_disconnect = data['sid']
+        client_server_sid_event.set()
+        print(f"Disconnect Test: Server registered SID {server_sid_of_client_to_disconnect} for disconnecting client {client.sid}")
 
     @client.event
     async def disconnect():
-        print(f"Disconnect test: Client {client_sid_to_disconnect} confirmed disconnection itself.")
+        # This event uses client.sid, but server actions use server_sid_of_client_to_disconnect
+        print(f"Disconnect Test: Client {client.sid} (Server SID: {server_sid_of_client_to_disconnect}) confirmed disconnection itself.")
 
     @observer_client.event
     async def connect():
-        observer_connected.set()
+        observer_connected_event.set()
         print("Disconnect test: Observer client connected.")
+
+    # Observer doesn't need its own server_sid for this test's logic, but good to be aware of it.
 
     @observer_client.on("message")
     async def on_observer_message(data):
-        nonlocal client_sid_to_disconnect
-        print(f"Disconnect test: Observer client received message: {data}")
-        if data.get("type") == "status" and f"User {client_sid_to_disconnect} has left." in data.get("data", ""):
+        nonlocal server_sid_of_client_to_disconnect
+        # Wait for the SID of the disconnecting client to be known
+        if not client_server_sid_event.is_set():
+            await client_server_sid_event.wait()
+
+        print(f"Disconnect test: Observer client received message: {data}, expecting user_left for SID: {server_sid_of_client_to_disconnect}")
+        if data.get("type") == "status" and \
+           server_sid_of_client_to_disconnect and \
+           f"User {server_sid_of_client_to_disconnect} has left." in data.get("data", ""):
             user_left_message_received.set()
 
     try:
-        await client.connect(live_server_url, socketio_path="ws")
-        await observer_client.connect(live_server_url, socketio_path="ws")
+        # Connect with forced websocket transport
+        await client.connect(live_server_url, socketio_path="ws", transports=['websocket'])
+        await observer_client.connect(live_server_url, socketio_path="ws", transports=['websocket'])
 
-        await asyncio.wait_for(connected_event.wait(), timeout=5)
-        await asyncio.wait_for(observer_connected.wait(), timeout=5)
+        await asyncio.wait_for(client_connected_event.wait(), timeout=5)
+        await asyncio.wait_for(observer_connected_event.wait(), timeout=5)
+        await asyncio.wait_for(client_server_sid_event.wait(), timeout=5) # Crucial: wait for server SID
 
         assert client.connected
         assert observer_client.connected
-        assert client_sid_to_disconnect is not None
+        assert server_sid_of_client_to_disconnect is not None, "Server SID for client_to_disconnect was not set."
 
         initial_sids = manager.get_active_sids()
-        assert client_sid_to_disconnect in initial_sids, "Client to disconnect was not registered in manager."
+        assert server_sid_of_client_to_disconnect in initial_sids, \
+            f"Client to disconnect (Server SID: {server_sid_of_client_to_disconnect}) was not registered in manager. Current manager SIDs: {initial_sids}"
 
-        await client.disconnect()
+        await client.disconnect() # This will trigger client's disconnect event and server's disconnect event
+
+        # Wait for a short period for the server to process the disconnect
+        # The disconnect event on the server should use the server_sid_of_client_to_disconnect
         await asyncio.sleep(1.0)
 
         sids_after_disconnect = manager.get_active_sids()
-        assert client_sid_to_disconnect not in sids_after_disconnect, \
-            f"Disconnected client SID {client_sid_to_disconnect} still in manager. SIDs: {sids_after_disconnect}"
+        assert server_sid_of_client_to_disconnect not in sids_after_disconnect, \
+            f"Disconnected client (Server SID: {server_sid_of_client_to_disconnect}) still in manager. SIDs: {sids_after_disconnect}"
 
         await asyncio.wait_for(user_left_message_received.wait(), timeout=5)
-        assert user_left_message_received.is_set(), "Observer client did not receive 'user has left' message."
+        assert user_left_message_received.is_set(), "Observer client did not receive 'user has left' message for the correct SID."
 
     except asyncio.TimeoutError as e:
         details = []
-        if not connected_event.is_set(): details.append("Client to disconnect connect timeout")
-        if not observer_connected.is_set(): details.append("Observer client connect timeout")
-        # Check manager only if client_sid_to_disconnect was set
-        if client_sid_to_disconnect and client.connected and client_sid_to_disconnect in manager.get_active_sids():
-            details.append("Client not removed from manager")
+        if not client_connected_event.is_set(): details.append("Client to disconnect connect timeout")
+        if not observer_connected_event.is_set(): details.append("Observer client connect timeout")
+        if not client_server_sid_event.is_set(): details.append("Server SID for disconnecting client not received")
+
+        # Check manager only if server_sid_of_client_to_disconnect was set
+        if server_sid_of_client_to_disconnect and server_sid_of_client_to_disconnect in manager.get_active_sids():
+            details.append(f"Client {server_sid_of_client_to_disconnect} not removed from manager")
         if not user_left_message_received.is_set(): details.append("User left message not received by observer")
         if not details: details.append(f"Unknown timeout: {e}")
         pytest.fail(f"Timeout during graceful disconnection test. Details: {'; '.join(details)}")

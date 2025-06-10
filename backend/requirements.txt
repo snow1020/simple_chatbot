@@ -2,3 +2,5 @@ fastapi
 uvicorn[standard]
 python-socketio[client]
 pytest
+pytest-asyncio
+aiohttp
